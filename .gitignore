@@ -1,0 +1,38 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Temporary files
+temp/
+*.temp.mp4
+
+# Input/Output videos
+input/
+output/
+*_highlight_video.mp4
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# MediaPipe model (auto-downloaded)
+assets/*.tflite
+
+# Audio files (user-provided)
+assets/*.aac
+assets/*.mp3
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/
