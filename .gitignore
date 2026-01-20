@@ -13,9 +13,11 @@ wheels/
 temp/
 *.temp.mp4
 
-# Input/Output videos
-input/
-output/
+# Input/Output videos (keep folder structure with .gitkeep)
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
 *_highlight_video.mp4
 
 # IDE

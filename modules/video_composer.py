@@ -175,14 +175,15 @@ def concatenate_clips(clip_paths: list[str], output_path: str) -> bool:
         return False
 
 
-def add_audio(video_path: str, audio_path: str, output_path: str) -> bool:
+def add_audio(video_path: str, audio_path: str, output_path: str, bgm_volume: float = 0.3) -> bool:
     """
-    動画に音声を追加（ループ再生、フェードアウト付き）
+    動画にBGMを追加（元の動画音声とミックス、ループ再生、フェードアウト付き）
 
     引数:
         video_path: 動画ファイルパス
-        audio_path: 音声ファイルパス
+        audio_path: BGM音声ファイルパス
         output_path: 出力パス
+        bgm_volume: BGMの音量（0.0〜1.0、デフォルト0.3）
     戻り値:
         成功したかどうか
     """
@@ -191,30 +192,52 @@ def add_audio(video_path: str, audio_path: str, output_path: str) -> bool:
         video_probe = ffmpeg.probe(video_path)
         video_duration = float(video_probe["format"]["duration"])
 
+        # 動画に音声があるか確認
+        has_video_audio = any(s["codec_type"] == "audio" for s in video_probe["streams"])
+
         # 入力ストリーム
         video_input = ffmpeg.input(video_path)
         video_stream = video_input.video
 
-        # 音声をループさせて動画の長さに合わせる
-        # aloop: ループ回数を十分大きく設定
+        # BGMをループさせて動画の長さに合わせる
         # atrim: 動画の長さでトリム
+        # volume: BGMの音量を調整
         # afade: 最後の2秒でフェードアウト
-        audio_input = ffmpeg.input(audio_path, stream_loop=-1)
-        audio_stream = audio_input.audio.filter(
+        bgm_input = ffmpeg.input(audio_path, stream_loop=-1)
+        bgm_stream = bgm_input.audio.filter(
             "atrim", duration=video_duration
+        ).filter(
+            "volume", volume=bgm_volume
         ).filter(
             "afade", type="out", start_time=max(0, video_duration - 2), duration=2
         )
 
-        # 出力
-        output = ffmpeg.output(
-            video_stream,
-            audio_stream,
-            output_path,
-            vcodec="copy",
-            acodec="aac",
-            audio_bitrate="192k",
-        )
+        if has_video_audio:
+            # 動画の元音声を取得
+            original_audio = video_input.audio
+
+            # 元音声とBGMをミックス
+            mixed_audio = ffmpeg.filter([original_audio, bgm_stream], "amix", inputs=2, duration="first")
+
+            # 出力
+            output = ffmpeg.output(
+                video_stream,
+                mixed_audio,
+                output_path,
+                vcodec="copy",
+                acodec="aac",
+                audio_bitrate="192k",
+            )
+        else:
+            # 動画に音声がない場合はBGMのみ
+            output = ffmpeg.output(
+                video_stream,
+                bgm_stream,
+                output_path,
+                vcodec="copy",
+                acodec="aac",
+                audio_bitrate="192k",
+            )
 
         ffmpeg.run(output, overwrite_output=True, quiet=True)
         return True

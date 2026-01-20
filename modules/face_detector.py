@@ -19,14 +19,15 @@ MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze
 
 def _ensure_model_exists():
     """モデルファイルが存在することを確認し、なければダウンロードする"""
-    if MODEL_PATH.exists():
-        return str(MODEL_PATH)
+    if not MODEL_PATH.exists():
+        print(f"顔検出モデルをダウンロード中...")
+        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print(f"モデルをダウンロードしました: {MODEL_PATH}")
 
-    print(f"顔検出モデルをダウンロード中...")
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    print(f"モデルをダウンロードしました: {MODEL_PATH}")
-    return str(MODEL_PATH)
+    # Windows日本語パス対策: ファイルをバイトとして読み込んで返す
+    with open(MODEL_PATH, 'rb') as f:
+        return f.read()
 
 
 def detect_faces(frame: np.ndarray) -> list[dict]:
@@ -42,11 +43,11 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
     faces = []
     height, width = frame.shape[:2]
 
-    # モデルファイルの確認
-    model_path = _ensure_model_exists()
+    # モデルファイルの確認（バイトデータとして取得）
+    model_data = _ensure_model_exists()
 
-    # MediaPipe Face Detector の設定
-    base_options = python.BaseOptions(model_asset_path=model_path)
+    # MediaPipe Face Detector の設定（バッファから読み込み）
+    base_options = python.BaseOptions(model_asset_buffer=model_data)
     options = vision.FaceDetectorOptions(
         base_options=base_options,
         min_detection_confidence=0.5,

@@ -24,6 +24,14 @@ SUPPORTED_FORMATS = [".mp4", ".mov", ".avi"]
 FACE_DETECTION_INTERVAL = 1.0  # 何秒おきにフレームを解析するか
 MIN_FACE_SIZE = (30, 30)  # 検出する最小の顔サイズ
 
+# 顔識別・クラスタリング設定
+FACE_SCAN_INTERVAL = 2.0  # スキャン時のフレーム間隔（秒）
+FACE_CLUSTER_THRESHOLD = 0.5  # DBSCANのeps（顔埋め込み距離の閾値）
+FACE_MIN_CLUSTER_SIZE = 2  # クラスターを形成する最小顔数
+FACE_PREVIEW_SIZE = (150, 150)  # プレビュー画像サイズ
+FACE_PREVIEW_DIR = "face_previews"  # プレビュー画像のディレクトリ名
+SCAN_CACHE_FILE = "scan_cache.json"  # スキャンキャッシュファイル名
+
 # テロップ設定
 TITLE_DURATION = 3.0  # 既定の表示秒数
 TITLE_FONT_PATH = PROJECT_ROOT / "assets" / "NotoSansJP-Regular.ttf"  # 日本語フォント

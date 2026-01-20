@@ -27,10 +27,20 @@ def get_video_files(folder_path: str) -> list[str]:
         video_files.extend(folder.glob(f"*{ext}"))
         video_files.extend(folder.glob(f"*{ext.upper()}"))
 
-    # ファイル名でソート（通常は日時が含まれているため）
-    video_files = sorted(video_files, key=lambda x: x.name)
+    # 重複を除去（Windowsは大文字小文字を区別しないため同じファイルが2回含まれる可能性）
+    seen = set()
+    unique_files = []
+    for f in video_files:
+        # 正規化したパスで重複チェック
+        normalized = str(f.resolve()).lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_files.append(f)
 
-    return [str(f) for f in video_files]
+    # ファイル名でソート（通常は日時が含まれているため）
+    unique_files = sorted(unique_files, key=lambda x: x.name)
+
+    return [str(f) for f in unique_files]
 
 
 def extract_frames(
