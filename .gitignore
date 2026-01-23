@@ -38,3 +38,10 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+# New ignored files
+assets/*.task
+bgm/
+*.json
+*.mp4
+!*_highlight_video.mp4
