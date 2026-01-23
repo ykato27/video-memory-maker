@@ -6,7 +6,17 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
+from config import (
+    OUTPUT_WIDTH,
+    OUTPUT_HEIGHT,
+    OUTPUT_FPS,
+    VIDEO_BITRATE,
+    VIDEO_PROFILE,
+    VIDEO_PRESET,
+    VIDEO_CRF,
+    AUDIO_SAMPLE_RATE,
+    AUDIO_BITRATE,
+)
 
 
 def normalize_clip(input_path: str, output_path: str, width: int = None, height: int = None) -> bool:
@@ -89,26 +99,35 @@ def normalize_clip(input_path: str, output_path: str, width: int = None, height:
         # 音声ストリームを取得（存在する場合）
         has_audio = any(s["codec_type"] == "audio" for s in probe["streams"])
 
+        # エンコード設定を準備
+        encode_params = {
+            "vcodec": "libx264",
+            "video_bitrate": VIDEO_BITRATE,
+            "preset": VIDEO_PRESET,
+            "profile:v": VIDEO_PROFILE,
+            "pix_fmt": "yuv420p",
+        }
+
+        # CRFが指定されていない場合のみビットレート指定を使用
+        if VIDEO_CRF is not None:
+            encode_params["crf"] = VIDEO_CRF
+            del encode_params["video_bitrate"]
+
         if has_audio:
-            audio = stream.audio
+            audio = stream.audio.filter("aresample", AUDIO_SAMPLE_RATE)
             output = ffmpeg.output(
                 video,
                 audio,
                 output_path,
-                vcodec="libx264",
                 acodec="aac",
-                preset="fast",
-                crf=23,
-                pix_fmt="yuv420p",
+                audio_bitrate=AUDIO_BITRATE,
+                **encode_params,
             )
         else:
             output = ffmpeg.output(
                 video,
                 output_path,
-                vcodec="libx264",
-                preset="fast",
-                crf=23,
-                pix_fmt="yuv420p",
+                **encode_params,
             )
 
         ffmpeg.run(output, overwrite_output=True, quiet=True)
@@ -119,6 +138,117 @@ def normalize_clip(input_path: str, output_path: str, width: int = None, height:
         return False
     except Exception as e:
         print(f"正規化エラー: {e}")
+        return False
+
+
+def add_title_overlay(
+    video_path: str,
+    output_path: str,
+    title_text: str,
+    duration: float = 3.0,
+    font_size: int = 48,
+    text_color: str = "#FFFFFF",
+    font_path: str = None,
+) -> bool:
+    """
+    動画の冒頭にテロップをオーバーレイ（透過背景）
+
+    引数:
+        video_path: 入力動画パス
+        output_path: 出力動画パス
+        title_text: テロップテキスト
+        duration: テロップ表示秒数（デフォルト: 3.0）
+        font_size: フォントサイズ（デフォルト: 48）
+        text_color: 文字色（デフォルト: #FFFFFF）
+        font_path: フォントファイルパス
+    戻り値:
+        成功したかどうか
+    """
+    try:
+        # フォントパスが指定されていない場合は設定ファイルから取得
+        if font_path is None:
+            from config import TITLE_FONT_PATH
+            font_path = str(TITLE_FONT_PATH)
+
+        # Windowsパスのエスケープ（FFmpegのdrawtextフィルタ用）
+        escaped_font_path = font_path.replace("\\", "/").replace(":", "\\\\:")
+
+        # 入力動画の情報を取得
+        probe = ffmpeg.probe(video_path)
+        has_audio = any(s["codec_type"] == "audio" for s in probe["streams"])
+
+        # テキストを行に分割（\nで分割）
+        lines = title_text.replace("\\n", "\n").split("\n")
+
+        # 入力ストリーム
+        stream = ffmpeg.input(video_path)
+        video = stream.video
+        
+        # 各行のテキストを描画
+        # FFmpegのdrawtextフィルタを使用
+        for i, line in enumerate(lines):
+            # 特殊文字のエスケープ
+            escaped_line = line.replace("'", "\\'").replace(":", "\\:")
+            
+            # Y座標を計算（中央揃え、行間を考慮）
+            total_lines = len(lines)
+            line_height = font_size * 1.5
+            total_height = total_lines * line_height
+            start_y = f"(h-{total_height})/2+{i * line_height}"
+            
+            video = video.filter(
+                "drawtext",
+                text=escaped_line,
+                fontfile=escaped_font_path,
+                fontsize=font_size,
+                fontcolor=text_color.lstrip("#"),
+                x="(w-text_w)/2",  # 水平中央
+                y=start_y,
+                enable=f"lt(t,{duration})",  # 指定秒数だけ表示
+                shadowcolor="black",
+                shadowx=2,
+                shadowy=2,
+            )
+
+        # エンコード設定を準備
+        encode_params = {
+            "vcodec": "libx264",
+            "video_bitrate": VIDEO_BITRATE,
+            "preset": VIDEO_PRESET,
+            "profile:v": VIDEO_PROFILE,
+            "pix_fmt": "yuv420p",
+        }
+
+        if VIDEO_CRF is not None:
+            encode_params["crf"] = VIDEO_CRF
+            del encode_params["video_bitrate"]
+
+        # 出力
+        if has_audio:
+            audio = stream.audio.filter("aresample", AUDIO_SAMPLE_RATE)
+            output = ffmpeg.output(
+                video,
+                audio,
+                output_path,
+                acodec="aac",
+                audio_bitrate=AUDIO_BITRATE,
+                **encode_params,
+            )
+        else:
+            output = ffmpeg.output(
+                video,
+                output_path,
+                **encode_params,
+            )
+
+        ffmpeg.run(output, overwrite_output=True, quiet=True)
+        return True
+
+    except ffmpeg.Error as e:
+        print(f"FFmpegエラー (add_title_overlay): {e}")
+        return False
+    except Exception as e:
+        print(f"テロップオーバーレイエラー: {e}")
         return False
 
 
@@ -200,24 +330,34 @@ def add_audio(video_path: str, audio_path: str, output_path: str, bgm_volume: fl
         video_stream = video_input.video
 
         # BGMをループさせて動画の長さに合わせる
-        # atrim: 動画の長さでトリム
-        # volume: BGMの音量を調整
-        # afade: 最後の2秒でフェードアウト
+        # asetpts: タイムスタンプをリセット
+        # volume: 音量調整
+        # afade: フェードアウト（動画終了時に合わせる）
         bgm_input = ffmpeg.input(audio_path, stream_loop=-1)
-        bgm_stream = bgm_input.audio.filter(
-            "atrim", duration=video_duration
-        ).filter(
-            "volume", volume=bgm_volume
-        ).filter(
-            "afade", type="out", start_time=max(0, video_duration - 2), duration=2
-        )
+        bgm_stream = bgm_input.audio.filter("asetpts", "PTS-STARTPTS")
+        
+        # フェードアウトの設定
+        if video_duration > 2:
+            bgm_stream = bgm_stream.filter(
+                "afade", type="out", start_time=video_duration - 2, duration=2
+            )
+            
+        bgm_stream = bgm_stream.filter("volume", volume=bgm_volume)
 
         if has_video_audio:
             # 動画の元音声を取得
             original_audio = video_input.audio
 
             # 元音声とBGMをミックス
-            mixed_audio = ffmpeg.filter([original_audio, bgm_stream], "amix", inputs=2, duration="first")
+            # duration="first": 最初の入力（元動画）の長さに合わせる
+            # dropout_transition=0: 音声終了時の音量低下を防ぐ
+            mixed_audio = ffmpeg.filter(
+                [original_audio, bgm_stream],
+                "amix",
+                inputs=2,
+                duration="first",
+                dropout_transition=0
+            ).filter("aresample", AUDIO_SAMPLE_RATE)
 
             # 出力
             output = ffmpeg.output(
@@ -226,17 +366,21 @@ def add_audio(video_path: str, audio_path: str, output_path: str, bgm_volume: fl
                 output_path,
                 vcodec="copy",
                 acodec="aac",
-                audio_bitrate="192k",
+                audio_bitrate=AUDIO_BITRATE,
             )
         else:
-            # 動画に音声がない場合はBGMのみ
+            # 動画に音声がない場合はBGMのみ（長さを動画に合わせる）
+            # サンプルレート変換を追加
+            bgm_resampled = bgm_stream.filter("aresample", AUDIO_SAMPLE_RATE)
+
             output = ffmpeg.output(
                 video_stream,
-                bgm_stream,
+                bgm_resampled,
                 output_path,
                 vcodec="copy",
                 acodec="aac",
-                audio_bitrate="192k",
+                audio_bitrate=AUDIO_BITRATE,
+                shortest=None,  # ビデオストリームの長さに合わせるため
             )
 
         ffmpeg.run(output, overwrite_output=True, quiet=True)

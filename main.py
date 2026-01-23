@@ -7,6 +7,8 @@ from pathlib import Path
 
 from config import (
     DEFAULT_AUDIO_PATH,
+    BGM_FOLDER,
+    SUPPORTED_AUDIO_FORMATS,
     OUTPUT_WIDTH,
     OUTPUT_HEIGHT,
     CLIP_DURATION,
@@ -26,6 +28,7 @@ from modules.video_composer import (
     normalize_clip,
     concatenate_clips,
     add_audio,
+    add_title_overlay,
     generate_output_filename,
 )
 from modules.face_identifier import (
@@ -43,6 +46,30 @@ from modules.scan_cache import (
     get_cache_info,
     clear_cache,
 )
+from modules.face_selector_gui import show_face_selector_gui
+
+
+def get_bgm_from_folder() -> Path | None:
+    """
+    BGMフォルダから音声ファイルを取得
+
+    戻り値:
+        音声ファイルのパス（見つからない場合はNone）
+    """
+    if not BGM_FOLDER.exists():
+        return None
+
+    # BGMフォルダ内の音声ファイルを検索
+    audio_files = []
+    for ext in SUPPORTED_AUDIO_FORMATS:
+        audio_files.extend(BGM_FOLDER.glob(f"*{ext}"))
+
+    if not audio_files:
+        return None
+
+    # ファイル名でソートして最初のファイルを返す（一貫性のため）
+    audio_files.sort()
+    return audio_files[0]
 
 
 def parse_args():
@@ -336,44 +363,57 @@ def process_with_face_selection(args, video_files: list[str], output_folder: Pat
     # Phase 1.5: 人物選択
     if args.face_ids:
         # コマンドラインで指定された場合
-        selected_ids = [int(x.strip()) for x in args.face_ids.split(",")]
+        if args.face_ids.lower() == "all":
+            selected_ids = [c.cluster_id for c in clusters]
+        else:
+            selected_ids = [int(x.strip()) for x in args.face_ids.split(",")]
         print(f"\n選択された人物ID: {selected_ids}")
     else:
-        # インタラクティブに選択
-        selected_ids = prompt_face_selection(clusters, output_folder)
+        # GUIで選択
+        print("\n顔選択UIを起動中...")
+        selected_ids = show_face_selector_gui(clusters, output_folder)
 
     print(f"\n対象人物: {selected_ids}")
 
-    # Phase 2: 選択された人物のクリップを抽出
+    # Phase 2: 全動画からハイライト動画を作成
     print("\n" + "=" * 50)
     print("Phase 2: ハイライト動画の作成")
     print("=" * 50)
 
-    # 選択された人物が映っている動画を取得
+    # 選択された人物が映っている動画の情報を取得
     videos_with_faces = get_videos_with_selected_faces(detections, selected_ids)
 
-    if not videos_with_faces:
-        print("\nエラー: 選択された人物が映っている動画がありません")
-        sys.exit(1)
-
-    print(f"\n{len(videos_with_faces)}本の動画から抽出します")
+    print(f"\n全{len(video_files)}本の動画から抽出します")
+    print(f"  └ うち{len(videos_with_faces)}本に選択した人物が映っています")
 
     # 一時ディレクトリのセットアップ
     setup_temp_dir()
 
     try:
         clip_paths = []
-        sorted_videos = sorted(videos_with_faces.keys())
+        sorted_videos = sorted(video_files)
 
         for idx, video_path in enumerate(sorted_videos, 1):
             video_name = Path(video_path).name
-            video_detections = videos_with_faces[video_path]
             print(f"\n[{idx}/{len(sorted_videos)}] 処理中: {video_name}")
 
             try:
-                # 選択された人物が最も大きく映っているタイムスタンプを取得
-                best_sec = find_best_timestamp_for_person(video_detections, selected_ids)
-                print(f"  最適なフレーム: {best_sec:.1f}秒")
+                # 選択された人物が映っている動画かチェック
+                if video_path in videos_with_faces:
+                    # 選択された人物が映っている → その人物のシーンを抽出
+                    video_detections = videos_with_faces[video_path]
+                    best_sec = find_best_timestamp_for_person(video_detections, selected_ids)
+                    print(f"  選択した人物を検出 → 最適なフレーム: {best_sec:.1f}秒")
+                else:
+                    # 選択された人物が映っていない → 従来の顔検出ロジック
+                    print("  フレームを抽出中...")
+                    frames = extract_frames(video_path, interval=FACE_DETECTION_INTERVAL)
+                    if not frames:
+                        print(f"  警告: フレームを抽出できませんでした")
+                        continue
+                    print("  顔検出を実行中...")
+                    best_sec = find_best_frame(frames)
+                    print(f"  最適なフレーム: {best_sec:.1f}秒")
 
                 # クリップを抽出
                 raw_clip_path = str(TEMP_DIR / f"raw_clip_{idx:04d}.mp4")
@@ -494,35 +534,29 @@ def finalize_video(args, clip_paths: list[str], output_folder: Path, audio_path:
     """
     print(f"\n処理完了: {len(clip_paths)}本のクリップを抽出しました")
 
-    # テロップ動画を生成（指定されている場合）
-    all_clips = []
-    if args.title:
-        print("\nテロップ動画を生成中...")
-        title_config = TitleConfig(
-            text=args.title,
-            duration=args.title_duration,
-            width=OUTPUT_WIDTH,
-            height=OUTPUT_HEIGHT,
-            font_size=args.title_font_size,
-            bg_color=args.title_bg_color,
-            text_color=args.title_text_color,
-        )
-        title_path = str(TEMP_DIR / "title.mp4")
-        if generate_title_video(title_config, title_path):
-            all_clips.append(title_path)
-            print("テロップ動画を生成しました")
-        else:
-            print("警告: テロップ動画の生成に失敗しました")
-
-    # クリップを追加
-    all_clips.extend(clip_paths)
-
     # 動画を連結
     print("\n動画を連結中...")
     concatenated_path = str(TEMP_DIR / "concatenated.mp4")
-    if not concatenate_clips(all_clips, concatenated_path):
+    if not concatenate_clips(clip_paths, concatenated_path):
         print("エラー: 動画の連結に失敗しました")
         sys.exit(1)
+
+    # テロップをオーバーレイ（指定されている場合）
+    if args.title:
+        print("\nテロップをオーバーレイ中...")
+        titled_path = str(TEMP_DIR / "titled.mp4")
+        if add_title_overlay(
+            concatenated_path,
+            titled_path,
+            args.title,
+            duration=args.title_duration,
+            font_size=args.title_font_size,
+            text_color=args.title_text_color,
+        ):
+            concatenated_path = titled_path
+            print("テロップを追加しました")
+        else:
+            print("警告: テロップの追加に失敗しました")
 
     # 出力ファイル名を生成
     output_filename = generate_output_filename()
@@ -530,12 +564,11 @@ def finalize_video(args, clip_paths: list[str], output_folder: Path, audio_path:
 
     # 音声を追加（音声ファイルがある場合）
     if audio_path:
-        print("音声を追加中...")
+        print("BGMを追加中...")
         if not add_audio(concatenated_path, str(audio_path), output_path):
-            print("警告: 音声の追加に失敗しました。音声なしで出力します。")
+            print("警告: BGMの追加に失敗しました。BGMなしで出力します。")
             shutil.copy2(concatenated_path, output_path)
     else:
-        print("音声ファイルが指定されていないため、音声なしで出力します")
         shutil.copy2(concatenated_path, output_path)
 
     print(f"\n完了! 出力ファイル: {output_path}")
@@ -558,12 +591,20 @@ def main():
     # 音声ファイルの確認
     audio_path = None
     if args.audio:
+        # コマンドラインで指定された場合
         audio_path = Path(args.audio)
         if not audio_path.exists():
             print(f"警告: 音声ファイルが見つかりません: {args.audio}")
             audio_path = None
-    elif DEFAULT_AUDIO_PATH.exists():
-        audio_path = DEFAULT_AUDIO_PATH
+    else:
+        # 指定がない場合はBGMフォルダから自動選択
+        audio_path = get_bgm_from_folder()
+        if audio_path:
+            print(f"BGMを自動選択: {audio_path.name}")
+        elif DEFAULT_AUDIO_PATH.exists():
+            # BGMフォルダにファイルがない場合は既定のBGMを使用
+            audio_path = DEFAULT_AUDIO_PATH
+            print(f"既定のBGMを使用: {audio_path.name}")
 
     # 動画ファイル一覧を取得
     print("動画ファイルを検索中...")

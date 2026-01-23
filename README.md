@@ -5,8 +5,9 @@
 ## 機能
 
 - **顔検出による自動抽出**: MediaPipeを使用して、各動画から子供の顔が最も大きく映っているシーンを自動検出
+- **笑顔検出**: 表情豊かなシーンを優先的に抽出（笑顔スコアによる自動選別）
 - **顔選択モード**: 動画に映っている人物を事前にスキャンし、特定の人物のみを対象にハイライト動画を作成
-- **テロップ追加**: 動画の冒頭にタイトルテロップを挿入（日本語対応）
+- **テロップ追加**: 動画冒頭にテロップをオーバーレイ表示（透過背景、日本語対応）
 - **BGM追加**: 背景音楽を追加（元動画の音声とミックス、ループ再生、フェードアウト対応）
 - **解像度統一**: 異なる解像度の動画を540x960（縦向き）に統一
 
@@ -21,9 +22,9 @@ video-memory-maker/
 │   └── face_previews/   # 顔選択モード時のプレビュー画像
 ├── modules/             # 処理モジュール
 │   ├── video_loader.py      # 動画読み込み
-│   ├── face_detector.py     # 顔検出（MediaPipe）
+│   ├── face_detector.py     # 顔検出・笑顔検出（MediaPipe）
 │   ├── face_identifier.py   # 顔識別・クラスタリング（InsightFace）
-│   ├── video_composer.py    # 動画合成
+│   ├── video_composer.py    # 動画合成・テロップオーバーレイ
 │   ├── title_generator.py   # テロップ生成
 │   └── scan_cache.py        # スキャン結果キャッシュ
 └── assets/              # フォント等のリソース
@@ -40,6 +41,7 @@ video-memory-maker/
 ### 1. FFmpegのインストール
 
 **Windows (winget):**
+
 ```bash
 winget install Gyan.FFmpeg
 ```
@@ -66,7 +68,7 @@ uv sync
 # 基本（inputフォルダの動画を処理し、outputフォルダに保存）
 uv run python main.py -i input -o output
 
-# テロップ付き
+# テロップ付き（動画に透過オーバーレイ表示）
 uv run python main.py -i input -o output -t "2024年1月の思い出"
 
 # 抽出時間を2秒に変更
@@ -82,7 +84,7 @@ uv run python main.py -i input -o output -a "bgm.mp3"
 
 ### 顔選択モード
 
-特定の人物だけを対象にハイライト動画を作成できます。
+特定の人物（赤ちゃんなど）だけを対象にハイライト動画を作成できます。
 
 ```bash
 # 顔選択モードで実行（対話形式）
@@ -93,8 +95,8 @@ uv run python main.py -i input -o output --select-faces
 
 1. **Phase 1: スキャン** - 全動画をスキャンし、映っている人物を検出・クラスタリング
 2. 検出された人物のプレビュー画像が `output/face_previews/` に保存される
-3. 対象の人物ID（person_0, person_1, ...）を入力
-4. **Phase 2: 抽出** - 選択した人物が映っている動画のみからハイライト動画を生成
+3. 顔選択ウィンドウが表示されるので、対象の人物にチェックを入れて「決定」をクリック
+4. **Phase 2: 抽出** - 選択した人物が映っている動画はその人物を優先、それ以外の動画も通常の顔検出でハイライト動画を生成（**全動画を活用**）
 
 ```bash
 # 事前に人物IDを指定して実行
@@ -106,6 +108,17 @@ uv run python main.py -i input -o output --select-faces --rescan
 # 全員を対象（スキャン結果は保存）
 uv run python main.py -i input -o output --select-faces --face-ids all
 ```
+
+## フレーム選択アルゴリズム
+
+各動画から最適なシーンを選択する際、以下の要素を総合的に評価します：
+
+| 要素 | 重み | 説明 |
+|------|------|------|
+| 顔の大きさ | 35% | 顔が大きく映っているシーンを優先 |
+| 笑顔スコア | 35% | 笑顔など表情豊かなシーンを優先 |
+| 中央配置 | 20% | 顔がフレーム中央に近いシーンを優先 |
+| 検出信頼度 | 10% | 顔検出の確信度が高いシーンを優先 |
 
 ## コマンドラインオプション
 
@@ -120,8 +133,7 @@ uv run python main.py -i input -o output --select-faces --face-ids all
 | `--clip-duration` | `-d` | | 抽出秒数 | 1.0 |
 | `--title-duration` | | | テロップ表示秒数 | 3.0 |
 | `--title-font-size` | | | フォントサイズ | 48 |
-| `--title-bg-color` | | | テロップ背景色 | #FFFFFF |
-| `--title-text-color` | | | テロップ文字色 | #000000 |
+| `--title-text-color` | | | テロップ文字色 | #FFFFFF |
 
 ### 顔選択オプション
 
@@ -136,7 +148,7 @@ uv run python main.py -i input -o output --select-faces --face-ids all
 - **ファイル名**: `YYYYMMDD_highlight_video.mp4`
 - **解像度**: 540x960 (縦向き)
 - **フレームレート**: 30fps
-- **音声**: 元動画の音声 + BGM（指定時）のミックス
+- **音声**: 元動画の音声を保持（+ BGM指定時はミックス）
 
 ## 対応フォーマット
 
@@ -146,13 +158,15 @@ uv run python main.py -i input -o output --select-faces --face-ids all
 
 ## 注意事項
 
-- 初回実行時に顔検出モデル（約200KB）が自動ダウンロードされます
-- 顔選択モード初回実行時にInsightFaceモデル（約300MB）が自動ダウンロードされます
-- 処理時間目安：10本で約2〜3分（顔選択モードのスキャンは追加で1〜2分）
+- 初回実行時に以下のモデルが自動ダウンロードされます：
+  - 顔検出モデル（約200KB）
+  - 笑顔検出用ランドマークモデル（約4MB）
+- 顔選択モード初回実行時にInsightFaceモデル（約300MB）が追加でダウンロードされます
+- 処理時間目安：10本で約3〜5分（笑顔検出により若干増加）
 
 ## 依存ライブラリ
 
-- **MediaPipe**: 顔検出
+- **MediaPipe**: 顔検出・笑顔検出
 - **InsightFace**: 顔識別・埋め込み抽出
 - **scikit-learn**: DBSCANクラスタリング
 - **OpenCV**: 画像処理

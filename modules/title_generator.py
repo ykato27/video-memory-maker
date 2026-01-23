@@ -174,6 +174,7 @@ def generate_title_video(config: TitleConfig, output_path: str) -> bool:
 def _reencode_with_ffmpeg(video_path: str) -> bool:
     """
     FFmpegで動画を再エンコード（互換性向上のため）
+    無音の音声トラックを追加して、concat時に他のクリップの音声が失われないようにする
 
     引数:
         video_path: 動画ファイルパス
@@ -186,20 +187,34 @@ def _reencode_with_ffmpeg(video_path: str) -> bool:
     try:
         temp_path = str(Path(video_path).with_suffix(".temp.mp4"))
 
-        # 入力
-        stream = ffmpeg.input(video_path)
+        # 動画の長さを取得
+        probe = ffmpeg.probe(video_path)
+        duration = float(probe["format"]["duration"])
 
-        # 出力（H.264でエンコード）
-        stream = ffmpeg.output(
-            stream,
+        # 入力: 動画ファイル
+        video_input = ffmpeg.input(video_path)
+
+        # 無音音声を生成（anullsrc: 無音の音声ストリームを生成）
+        # 動画と同じ長さで、標準的なオーディオパラメータを使用
+        silent_audio = ffmpeg.input(
+            "anullsrc=r=44100:cl=stereo",
+            f="lavfi",
+            t=duration
+        )
+
+        # 出力（H.264でエンコード + 無音音声を追加）
+        output = ffmpeg.output(
+            video_input.video,
+            silent_audio.audio,
             temp_path,
             vcodec="libx264",
+            acodec="aac",
             preset="fast",
             crf=23,
             pix_fmt="yuv420p",
         )
 
-        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        ffmpeg.run(output, overwrite_output=True, quiet=True)
 
         # 一時ファイルを元のファイルに置き換え
         Path(video_path).unlink()
@@ -210,6 +225,7 @@ def _reencode_with_ffmpeg(video_path: str) -> bool:
     except Exception as e:
         print(f"再エンコードエラー: {e}")
         # エラーが発生しても元のファイルは残す
-        if Path(temp_path).exists():
-            Path(temp_path).unlink()
+        temp_path_obj = Path(video_path).with_suffix(".temp.mp4")
+        if temp_path_obj.exists():
+            temp_path_obj.unlink()
         return False

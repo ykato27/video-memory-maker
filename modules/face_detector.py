@@ -1,4 +1,4 @@
-"""顔検出と最適フレーム選定モジュール"""
+"""顔検出と最適フレーム選定モジュール（笑顔検出機能付き）"""
 
 import cv2
 import numpy as np
@@ -16,6 +16,10 @@ from config import MIN_FACE_SIZE, PROJECT_ROOT
 MODEL_PATH = PROJECT_ROOT / "assets" / "blaze_face_short_range.tflite"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 
+# 顔ランドマークモデル（笑顔検出用）
+LANDMARKER_PATH = PROJECT_ROOT / "assets" / "face_landmarker.task"
+LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+
 
 def _ensure_model_exists():
     """モデルファイルが存在することを確認し、なければダウンロードする"""
@@ -28,6 +32,78 @@ def _ensure_model_exists():
     # Windows日本語パス対策: ファイルをバイトとして読み込んで返す
     with open(MODEL_PATH, 'rb') as f:
         return f.read()
+
+
+def _ensure_landmarker_exists():
+    """顔ランドマークモデルが存在することを確認し、なければダウンロードする"""
+    if not LANDMARKER_PATH.exists():
+        print(f"顔ランドマークモデルをダウンロード中...")
+        LANDMARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(LANDMARKER_URL, LANDMARKER_PATH)
+        print(f"モデルをダウンロードしました: {LANDMARKER_PATH}")
+
+    with open(LANDMARKER_PATH, 'rb') as f:
+        return f.read()
+
+
+def calculate_smile_score(frame: np.ndarray) -> float:
+    """
+    フレーム内の笑顔スコアを計算
+
+    MediaPipe FaceLandmarkerのblendshapesを使用して笑顔を検出
+    
+    引数:
+        frame: 画像データ (BGR形式)
+    戻り値:
+        笑顔スコア (0.0〜1.0、高いほど笑顔)
+    """
+    try:
+        # モデルファイルの確認
+        model_data = _ensure_landmarker_exists()
+
+        # FaceLandmarker の設定
+        base_options = python.BaseOptions(model_asset_buffer=model_data)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=True,  # 表情のブレンドシェイプを出力
+            num_faces=5,  # 最大5人まで検出
+        )
+
+        # BGRからRGBに変換
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+
+        with vision.FaceLandmarker.create_from_options(options) as landmarker:
+            result = landmarker.detect(mp_image)
+
+            if not result.face_blendshapes:
+                return 0.0
+
+            # 全ての顔の笑顔スコアの最大値を返す
+            max_smile_score = 0.0
+            
+            for face_blendshapes in result.face_blendshapes:
+                smile_score = 0.0
+                
+                for blendshape in face_blendshapes:
+                    # 笑顔関連のブレンドシェイプを確認
+                    name = blendshape.category_name
+                    score = blendshape.score
+                    
+                    # 口角の上がり（笑顔の主要指標）
+                    if name == "mouthSmileLeft" or name == "mouthSmileRight":
+                        smile_score += score * 0.4
+                    # 頬の上がり
+                    elif name == "cheekSquintLeft" or name == "cheekSquintRight":
+                        smile_score += score * 0.1
+                
+                max_smile_score = max(max_smile_score, min(smile_score, 1.0))
+
+            return max_smile_score
+
+    except Exception as e:
+        # エラー時は笑顔スコア0を返す（処理を継続）
+        return 0.0
 
 
 def detect_faces(frame: np.ndarray) -> list[dict]:
@@ -97,15 +173,16 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
 
 
 def calculate_frame_score(
-    face_info: dict, frame: np.ndarray, frame_center: tuple[int, int]
+    face_info: dict, frame: np.ndarray, frame_center: tuple[int, int], smile_score: float = 0.0
 ) -> float:
     """
-    フレームのスコアを計算（顔の大きさと中央への近さを考慮）
+    フレームのスコアを計算（顔の大きさ、中央配置、笑顔を考慮）
 
     引数:
         face_info: 顔検出情報
         frame: フレーム画像
         frame_center: フレームの中央座標 (cx, cy)
+        smile_score: 笑顔スコア（0.0〜1.0）
     戻り値:
         スコア（大きいほど良い）
     """
@@ -127,18 +204,23 @@ def calculate_frame_score(
 
     # 面積のスコア（フレーム全体に対する比率）
     frame_area = frame_w * frame_h
-    area_score = area / frame_area
+    area_score = min(area / frame_area * 10, 1.0)  # 正規化（最大1.0）
 
     # 総合スコア（重み付け）
-    # 顔の大きさを重視しつつ、中央に近いことも考慮
-    score = (area_score * 0.6 + center_score * 0.3 + confidence * 0.1)
+    # 顔の大きさ、笑顔、中央配置、信頼度を考慮
+    score = (
+        area_score * 0.35 +      # 顔の大きさ: 35%
+        smile_score * 0.35 +     # 笑顔: 35%
+        center_score * 0.20 +    # 中央配置: 20%
+        confidence * 0.10        # 信頼度: 10%
+    )
 
     return score
 
 
 def find_best_frame(frames: list[tuple[float, np.ndarray]]) -> float:
     """
-    子供の顔が最も大きく映っているフレームを特定
+    表情豊かで子供の顔が大きく映っているフレームを特定
 
     引数:
         frames: (秒数, フレーム画像)のリスト
@@ -157,13 +239,16 @@ def find_best_frame(frames: list[tuple[float, np.ndarray]]) -> float:
         if not faces:
             continue
 
+        # 笑顔スコアを計算（フレーム全体で1回だけ）
+        smile_score = calculate_smile_score(frame)
+
         # フレームの中央座標
         h, w = frame.shape[:2]
         center = (w // 2, h // 2)
 
         # 各顔のスコアを計算し、最も高いものを採用
         for face in faces:
-            score = calculate_frame_score(face, frame, center)
+            score = calculate_frame_score(face, frame, center, smile_score)
             if score > best_score:
                 best_score = score
                 best_sec = sec
