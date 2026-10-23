@@ -1,5 +1,6 @@
 """スキャン結果のキャッシュ管理モジュール"""
 
+import hashlib
 import json
 import numpy as np
 from datetime import datetime
@@ -7,7 +8,38 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import SCAN_CACHE_FILE, FACE_PREVIEW_DIR
+from config import (
+    SCAN_CACHE_FILE,
+    FACE_PREVIEW_DIR,
+    FACE_SCAN_INTERVAL,
+    FACE_CLUSTER_THRESHOLD,
+    FACE_MIN_CLUSTER_SIZE,
+    FACE_DETECTION_INTERVAL,
+    MIN_FACE_SIZE,
+    FACE_PREVIEW_SIZE,
+)
+
+
+def _scan_settings() -> dict:
+    """スキャン結果の同一性に影響する設定値を返す。
+
+    これらを変えると検出・クラスタリング結果が変わるため、キャッシュの
+    有効性判定に含める。主要な設定を変えたら再スキャンが必要。
+    """
+    return {
+        "FACE_SCAN_INTERVAL": FACE_SCAN_INTERVAL,
+        "FACE_CLUSTER_THRESHOLD": FACE_CLUSTER_THRESHOLD,
+        "FACE_MIN_CLUSTER_SIZE": FACE_MIN_CLUSTER_SIZE,
+        "FACE_DETECTION_INTERVAL": FACE_DETECTION_INTERVAL,
+        "MIN_FACE_SIZE": list(MIN_FACE_SIZE),
+        "FACE_PREVIEW_SIZE": list(FACE_PREVIEW_SIZE),
+    }
+
+
+def settings_hash() -> str:
+    """現在のスキャン設定のハッシュ（キャッシュキー用）"""
+    payload = json.dumps(_scan_settings(), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def save_scan_results(
@@ -36,6 +68,7 @@ def save_scan_results(
 
     cache_data = {
         "scan_timestamp": datetime.now().isoformat(),
+        "settings_hash": settings_hash(),
         "video_count": len(set(d.video_path for d in detections)),
         "face_count": len(detections),
         "cluster_count": len(clusters),
@@ -101,6 +134,12 @@ def is_cache_valid(output_dir: Path, input_folder: Path) -> bool:
         with open(cache_path, "r", encoding="utf-8") as f:
             cache_data = json.load(f)
 
+        # スキャン設定が変わっていたら無効（設定変更が結果に反映されない
+        # 問題の修正）。settings_hash を持たない旧キャッシュも無効とし、
+        # 一度だけ再スキャンさせる。
+        if cache_data.get("settings_hash") != settings_hash():
+            return False
+
         # キャッシュのタイムスタンプを取得
         cache_time = datetime.fromisoformat(cache_data["scan_timestamp"])
 
@@ -156,6 +195,7 @@ def get_cache_info(output_dir: Path) -> dict | None:
 
         return {
             "scan_timestamp": cache_data.get("scan_timestamp"),
+            "settings_hash": cache_data.get("settings_hash"),
             "video_count": cache_data.get("video_count", 0),
             "face_count": cache_data.get("face_count", 0),
             "cluster_count": cache_data.get("cluster_count", 0),
