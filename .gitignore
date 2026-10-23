@@ -18,19 +18,29 @@ input/*
 !input/.gitkeep
 output/*
 !output/.gitkeep
-*_highlight_video.mp4
+
+# Videos (generated/input media is not tracked)
+*.mp4
+
+# MediaPipe models (auto-downloaded on first run)
+assets/*.tflite
+assets/*.task
+
+# Fonts (not bundled; place manually if needed)
+assets/*.ttf
+
+# Audio files (user-provided, not tracked)
+assets/*.aac
+assets/*.mp3
+bgm/
+
+# Generated JSON files
+*.json
 
 # IDE
 .idea/
 .vscode/
 *.swp
-
-# MediaPipe model (auto-downloaded)
-assets/*.tflite
-
-# Audio files (user-provided)
-assets/*.aac
-assets/*.mp3
 
 # OS files
 .DS_Store
@@ -38,10 +48,3 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
-
-# New ignored files
-assets/*.task
-bgm/
-*.json
-*.mp4
-!*_highlight_video.mp4
