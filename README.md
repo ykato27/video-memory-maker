@@ -2,6 +2,87 @@
 
 複数の動画ファイルから、子供の顔が映っている重要なシーンを自動抽出し、連結してハイライト動画を作成するツールです。
 
+## 月ごとの1秒動画（写真にも対応）
+
+`monthly.py` は、撮影日で月別に整理し、最大20点を各1秒ずつつなぐダイジェストを作ります。
+[みてねの開発者による月版の解説](https://gihyo.jp/article/2023/07/mitene-07-1sec-movie)を参考にしています。
+みてねの公式機能や、内部の選定アルゴリズムを再現するものではありません。
+
+- 動画を優先し、動画が20本未満の月は写真で補います。素材の重複を除き、撮影日が偏らないように選びます。
+- 動画は最大12場面を調べ、顔の大きさ・鮮明さ・明るさから1秒を選びます。特定の人物の識別や笑顔判定は行いません。
+- 写真はJPEG・PNG・HEIC・HEIF・WebP、動画はMP4・MOV・M4V・AVI・MTS・3GPに対応します。
+- 元の縦横比を保ち、余白にぼかした背景を置きます。撮影日と冒頭の年月を表示します。
+- 元動画の音は既定で20%に抑え、BGMを一定の聞きやすい音量に整えてミックスします。大きな元音声が入るとBGMも緩やかに下げます。
+- 出力は540×960・30fps・H.264/AACです。短い動画は最後のフレームで1秒まで補います。
+- 完成した動画は上書きしません。一時ファイルは実行ごとに分かれます。
+
+FFmpegとuvがあれば、旧モードの顔識別モデルやGUIを導入せずに実行できます。
+Python 3.12または3.13を使ってください。必要なライブラリはスクリプト先頭の定義からuvが専用環境へ導入します。
+
+```bash
+# まず素材選定だけ確認（BGM生成も行わない）
+uv run --script monthly.py -i input -o output/monthly --month 2026-09 --plan-only
+
+# 既存のBGMを使用
+uv run --script monthly.py -i input -o output/monthly --month 2026-09 --audio bgm/family.wav
+
+# 撮影日のある全月を、月ごとに別ファイルへ出力
+uv run --script monthly.py -i input -o output/monthly --audio bgm/family.wav
+
+# 元音声をさらに小さくする
+uv run --script monthly.py -i input -o output/monthly --original-volume 0.12 --bgm-volume 0.8 --audio bgm/family.wav
+```
+
+出力は `output/monthly/2026-09-memories.mp4` です。
+採用素材・撮影日・切り出し位置・除外理由は `selection-日時.json` に保存します。
+読み込めない素材があっても残りは出力しますが、終了コードは0にせず、一部を除外したことを知らせます。
+
+### みてねから取得した素材の撮影日
+
+みてねのブラウザ版の正規の「ダウンロード」で保存したファイルを入力にしてください。
+取得・認証の自動化はこのスクリプトに含めていません。保存先には専用の素材フォルダを選んでください。
+共有URL、パスワード、ブラウザの認証情報をリポジトリへ保存する必要はありません。
+
+撮影日はEXIF、動画の撮影日時タグ、ファイル名の `YYYYMMDD` または `YYYY-MM-DD` から判定します。
+動画は元の撮影日時タグを優先し、写真はEXIFの時差情報も読み取って日本時間で扱います。
+ダウンロード時に変わるファイル更新日時は撮影日として使いません。
+日付が消えた素材や、編集で日時が変わった素材には、みてねの詳細画面にある撮影日をCSVで指定してください。
+CSVを指定した場合は、そのCSVに記載した素材だけを処理します。相対パスはCSVの場所が基準です。
+
+```csv
+path,taken_at,start_seconds
+materials/first.mp4,2026-09-03T10:30:00,2.5
+materials/second.jpg,2026-09-12,
+```
+
+```bash
+uv run --script monthly.py -i input -o output/monthly --manifest input/dates.csv --audio bgm/family.wav
+```
+
+### Audio Studio MCPでオリジナルBGMを生成
+
+[Audio Studio MCP](https://github.com/kanaworksai-hue/audio-studio-mcp/blob/main/README.ja.md)を案内に沿って導入し、モデルを取得した後に実行します。
+`--audio-studio-python` には、その専用環境にあるPythonの絶対パスを指定してください。
+設定済みのMCPサーバー登録は不要です。スクリプトがstdioでサーバーを起動し、必要な長さの音楽を1曲生成します。
+
+```bash
+uv run --script monthly.py -i input -o output/monthly --month 2026-09 \
+  --audio-studio-python /absolute/path/to/audio-studio-mcp/.venv/bin/python
+```
+
+生成するのは、ピアノとアコースティックギターを中心とする、温かい雰囲気のオリジナル曲です。
+写真・動画を音楽生成サーバーへ渡すことはありません。みてねの既存BGMを取得・複製する機能ではありません。
+曲と生成条件は出力先の `music/` に保存します。モデル導入と音楽生成にはAudio Studio MCP側の動作要件・ライセンスが適用されます。
+
+### 月版の検証
+
+```bash
+uv run --no-project --python 3.12 --with pytest --with pillow --with numpy \
+  --with 'opencv-python-headless>=4.13,<5' --with pillow-heif --with tzdata pytest tests -q
+```
+
+撮影日・タイムゾーン・動画優先・重複除外に加え、FFmpegで写真、無音動画、音声付き動画とBGMを実際に合成し、長さと元音声の減衰量を検証します。
+
 ## 機能
 
 - **顔検出による自動抽出**: MediaPipeを使用して、各動画から子供の顔が最も大きく映っているシーンを自動検出
